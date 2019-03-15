@@ -15,10 +15,9 @@ defmodule Mix.Tasks.Ecto.Dump.Schema do
   @postgres "postgres"
   @template ~s"""
 defmodule <%= app <> "." <> module_name %> do
-  use <%= app %>Web, :model
+  use Ecto.Schema
 
-  #IF PRIMARY KEY IS NOT `id` OR YOU HAVE MULTIPLE PRIMARY KEYS -> UNCOMMENT THE FOLLOWING LINE
-  #@primary_key false
+  @primary_key false
   schema "<%= table %>" do<%= for column <- columns do %>
     field :<%= String.downcase(elem(column,0)) %>, <%= elem(column, 1) %><%= if elem(column, 2) do %>, primary_key: true<% end %><% end %>
   end
@@ -98,7 +97,7 @@ end
   """
   @spec ensure_started(Ecto.Repo.t, Keyword.t) :: {:ok, pid, [atom]} | no_return
   def ensure_started(repo, opts) do
-    {:ok, _} = Application.ensure_all_started(:ecto)
+    {:ok, _} = Application.ensure_all_started(:ecto_sql)
     {:ok, apps} = repo.__adapter__.ensure_all_started(repo, :temporary)
 
     pool_size = Keyword.get(opts, :pool_size, 1)
@@ -149,7 +148,7 @@ end
           columns = Enum.map description.rows, fn [column_name, column_type, is_primary] ->
             {column_name, get_type(column_type), is_primary}
           end
-          
+
           content = EEx.eval_string(@template, [
             app: Mix.Project.config[:app] |> Atom.to_string |> String.capitalize,
             table: table,
@@ -190,13 +189,18 @@ end
 
   defp write_model(table, content) do
     app_name = Mix.Project.config[:app] |> Atom.to_string
-    filename = "lib/" <> app_name <> "_web/models/" <> table <> ".ex"
+    filepath = "lib/" <> app_name <> "/schemas/"
+    filename = filepath <> table <> ".ex"
     File.rm filename
-    {:ok, file} = File.open(filename, [:write])
-    IO.binwrite file, content
-    File.close(file)
-
-    IO.puts "\e[0;35m  #{filename} was generated"
+    File.mkdir_p filepath
+    case File.open(filename, [:write]) do
+      {:ok, file} ->
+        IO.binwrite file, content
+        File.close(file)
+        IO.puts "\e[0;35m  #{filename} was generated"
+      {:error, :enoent} ->
+        IO.puts "ERROR: Tried to open this file to write the #{table} schema but it failed: #{filename}"
+    end
   end
 
   defp to_camelcase(table_name) do
@@ -205,21 +209,37 @@ end
 
   defp get_type(row) do
     case row do
-      type when type in ["int", "integer", "bigint", "mediumint", "smallint", "tinyint"] ->
+      type when type in ["int", "integer", "bigint", "mediumint", "smallint", "tinyint", "oid"] ->
         ":integer"
-      type when type in ["varchar", "text", "char", "year", "mediumtext", "longtext", "tinytext", "character"] ->
+      type when type in ["varchar", "text", "char", "mediumtext", "longtext", "tinytext", "character", "character varying"] ->
         ":string"
-      type when type in ["decimal", "float", "double", "real"] ->
+      type when type in ["float", "double", "double precision", "float8", "real", "numeric"] ->
         ":float"
-      type when type in ["boolean", "bit", "bit varying"] ->
+      type when type in ["decimal", "money"] ->
+        ":decimal"
+      type when type in ["bool", "boolean", "bit", "bit varying"] ->
         ":boolean"
-      type when type in ["datetime", "timestamp", "date", "time"] ->
-        "Ecto.DateTime"
-      type when type in ["blob"] ->
-        ":binary"     
-      type -> 
+      type when type in ["datetime", "timestamp", "timestamp without time zone"] ->
+        ":naive_datetime"
+      type when type in ["utc_datetime", "timestamp with time zone", "timestamptz"] ->
+        ":utc_datetime"
+      type when type in ["date"] ->
+        ":date"
+      type when type in ["time"] ->
+        ":time"
+      type when type in ["blob", "binary_id", "bytea"] ->
+        ":binary"
+      type when type in ["uuid"] ->
+        "Ecto.UUID"
+      type when type in ["json", "jsonb", "hstore"] ->
+        ":map"
+      type when type in ["text[]"] ->
+        "{:array, :string}"
+      type when type in ["integer[]"] ->
+        "{:array, :integer}"
+      type ->
         IO.puts "\e[0;31m  #{type} is not supported ... Fallback to :string"
-        ":string" 
+        ":string"
     end
   end
 end
